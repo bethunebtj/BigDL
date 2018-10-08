@@ -127,11 +127,18 @@ class ImageFrame(JavaValue):
         return ImageFrame(jvalue=callBigDlFunc(bigdl_type, "read", path, sc, min_partitions))
 
     @classmethod
-    def read_parquet(cls, path, sql_context, bigdl_type="float"):
+    def read_parquet(cls, path, sc, bigdl_type="float"):
         """
         Read parquet file as DistributedImageFrame
         """
-        return DistributedImageFrame(jvalue=callBigDlFunc(bigdl_type, "readParquet", path, sql_context))
+        return DistributedImageFrame(jvalue=callBigDlFunc(bigdl_type, "readParquet", path, sc))
+
+    @classmethod
+    def write_parquet(cls, path, output, sc, partition_num = 1, bigdl_type="float"):
+        """
+        write ImageFrame as parquet file
+        """
+        return callBigDlFunc(bigdl_type, "writeParquet", path, output, sc, partition_num)
 
     def is_local(self):
         """
@@ -171,6 +178,33 @@ class ImageFrame(JavaValue):
         """
         return self.image_frame.get_predict(key)
 
+    def get_sample(self):
+        """
+        get sample from ImageFrame
+        """
+        return self.image_frame.get_sample()
+
+    def get_uri(self):
+        """
+        get uri from imageframe
+        """
+        return self.image_frame.get_uri()
+
+    def set_label(self, label, bigdl_type="float"):
+        """
+        set label for imageframe
+        """
+        return callBigDlFunc(bigdl_type,
+                             "setLabel", label, self.value)
+
+    def random_split(self, weights):
+        """
+        Random split imageframes according to weights
+        :param weights: weights for each ImageFrame
+        :return: 
+        """
+        jvalues =  self.image_frame.random_split(weights)
+        return [ImageFrame(jvalue) for jvalue in jvalues]
 
 class LocalImageFrame(ImageFrame):
     """
@@ -211,7 +245,14 @@ class LocalImageFrame(ImageFrame):
         predicts = callBigDlFunc(self.bigdl_type, "localImageFrameToPredict", self.value, key)
         return map(lambda predict: (predict[0], predict[1].to_ndarray()) if predict[1] else (predict[0], None), predicts)
 
+    def get_sample(self,  key="sample"):
+        return callBigDlFunc(self.bigdl_type, "localImageFrameToSample", self.value, key)
 
+    def get_uri(self, key = "uri"):
+        return callBigDlFunc(self.bigdl_type, "localImageFrameToUri", self.value, key)
+
+    def random_split(self, weights):
+        raise "random split not supported in LocalImageFrame"
 
 class DistributedImageFrame(ImageFrame):
     """
@@ -253,6 +294,14 @@ class DistributedImageFrame(ImageFrame):
         predicts = callBigDlFunc(self.bigdl_type, "distributedImageFrameToPredict", self.value, key)
         return predicts.map(lambda predict: (predict[0], predict[1].to_ndarray()) if predict[1] else (predict[0], None))
 
+    def get_sample(self,  key="sample"):
+        return callBigDlFunc(self.bigdl_type, "distributedImageFrameToSample", self.value, key)
+
+    def get_uri(self, key = "uri"):
+        return callBigDlFunc(self.bigdl_type, "distributedImageFrameToUri", self.value, key)
+
+    def random_split(self, weights):
+        return callBigDlFunc(self.bigdl_type, "distributedImageFrameRandomSplit", self.value, weights)
 
 class HFlip(FeatureTransformer):
     """
@@ -335,7 +384,7 @@ class ChannelNormalize(FeatureTransformer):
     :param std_g std value in G channel
     :param std_b std value in B channel
     """
-    def __init__(self, mean_r, mean_b, mean_g, std_r=1.0, std_g=1.0, std_b=1.0, bigdl_type="float"):
+    def __init__(self, mean_r, mean_g, mean_b, std_r=1.0, std_g=1.0, std_b=1.0, bigdl_type="float"):
         super(ChannelNormalize, self).__init__(bigdl_type, mean_r, mean_g, mean_b, std_r, std_g, std_b)
         
 class PixelNormalize(FeatureTransformer):

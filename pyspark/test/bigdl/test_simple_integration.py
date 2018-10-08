@@ -230,6 +230,19 @@ class TestSimple():
         model = Model([fc1, fc2], [output1, output2])
         model.save_graph_topology(tempfile.mkdtemp())
 
+    def test_graph_preprocessor(self):
+        fc1 = Linear(4, 2)()
+        fc2 = Linear(4, 2)()
+        cadd = CAddTable()([fc1, fc2])
+        preprocessor = Model([fc1, fc2], [cadd])
+        relu = ReLU()()
+        fc3 = Linear(2, 1)(relu)
+        trainable = Model([relu], [fc3])
+        model = Model(preprocessor, trainable)
+        model.forward([np.array([0.1, 0.2, -0.3, -0.4]), np.array([0.5, 0.4, -0.2, -0.1])])
+        model.backward([np.array([0.1, 0.2, -0.3, -0.4]), np.array([0.5, 0.4, -0.2, -0.1])],
+                       np.array([1.0]))
+
     def test_load_zip_conf(self):
         from bigdl.util.common import get_bigdl_conf
         import sys
@@ -523,6 +536,13 @@ class TestSimple():
                                  [-0.5906958], [-0.12307882], [-0.77907401]], dtype="float32")
         for i in range(0, total_length):
             assert_allclose(p[i], ground_label[i], atol=1e-6, rtol=0)
+
+        predict_result_with_batch = model.predict(features=predict_data,
+                                                  batch_size=4)
+        p_with_batch = predict_result_with_batch.take(6)
+        for i in range(0, total_length):
+            assert_allclose(p_with_batch[i], ground_label[i], atol=1e-6, rtol=0)
+
         predict_class = model.predict_class(predict_data)
         predict_labels = predict_class.take(6)
         for i in range(0, total_length):
@@ -650,6 +670,9 @@ class TestSimple():
         result4 = model.predict_class([JTensor.from_ndarray(np.ones([4, 3])),
                                        JTensor.from_ndarray(np.ones([4, 3]))])
         assert result4.shape == (4,)
+        result5 = model.predict_local([JTensor.from_ndarray(np.ones([4, 3])),
+                                       JTensor.from_ndarray(np.ones([4, 3]))], batch_size=2)
+        assert result5.shape == (4, 5)
 
     def test_model_broadcast(self):
 

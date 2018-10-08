@@ -23,6 +23,7 @@ import com.intel.analytics.bigdl.dataset.{PaddingParam, Sample, SampleToMiniBatc
 import com.intel.analytics.bigdl.models.inception.Inception_v1_NoAuxClassifier
 import com.intel.analytics.bigdl.nn.abstractnn.Activity
 import com.intel.analytics.bigdl.nn._
+import com.intel.analytics.bigdl.nn.quantized.StorageManager
 import com.intel.analytics.bigdl.tensor.Tensor
 import com.intel.analytics.bigdl.transform.vision.image._
 import com.intel.analytics.bigdl.transform.vision.image.augmentation.{CenterCrop, ChannelNormalize, Resize}

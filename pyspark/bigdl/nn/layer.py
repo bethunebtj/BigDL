@@ -33,6 +33,7 @@ from bigdl.optim.optimizer import L1Regularizer, L2Regularizer, L1L2Regularizer
 from py4j.java_gateway import JavaObject
 from pyspark.rdd import RDD
 from bigdl.transform.vision.image import ImageFrame
+from bigdl.dataset.dataset import DataSet
 
 if sys.version >= '3':
     long = int
@@ -334,7 +335,7 @@ class Layer(JavaValue, SharedStaticUtils):
         Three arguments passed in:
         A method to benchmark the model quality.
 
-        :param val_rdd: the input data
+        :param dataset: the input data
         :param batch_size: batch size
         :param val_methods: a list of validation methods. i.e: Top1Accuracy,Top5Accuracy and Loss.
         :return: a list of the metrics result
@@ -344,11 +345,17 @@ class Layer(JavaValue, SharedStaticUtils):
                           "evaluate", self.value)
             return self
         elif len(args) == 3:
-            val_rdd, batch_size, val_methods = args
-            return callBigDlFunc(self.bigdl_type,
-                                 "modelEvaluate",
-                                 self.value,
-                                 val_rdd, batch_size, val_methods)
+            dataset, batch_size, val_methods = args
+            if (isinstance(dataset, ImageFrame)):
+                return callBigDlFunc(self.bigdl_type,
+                                    "modelEvaluateImageFrame",
+                                    self.value,
+                                    dataset, batch_size, val_methods)
+            else:
+                return callBigDlFunc(self.bigdl_type,
+                                     "modelEvaluate",
+                                     self.value,
+                                     dataset, batch_size, val_methods)
         else:
             raise Exception("Error when calling evaluate(): it takes no argument or exactly three arguments only")
 
@@ -362,17 +369,19 @@ class Layer(JavaValue, SharedStaticUtils):
             raise Exception("Not supported type: %s" % type(x[0]))
 
 
-    def predict_local(self, X):
+    def predict_local(self, X, batch_size = -1):
         """
         :param X: X can be a ndarray or list of ndarray if the model has multiple inputs.
                   The first dimension of X should be batch.
+        :param batch_size: total batch size of prediction.
         :return: a ndarray as the prediction result.
         """
 
         jresults = callBigDlFunc(self.bigdl_type,
                              "predictLocal",
                                self.value,
-                               self._to_jtensors(X))
+                               self._to_jtensors(X),
+                               batch_size)
 
         return np.stack([j.to_ndarray()for j in jresults])
 
@@ -389,17 +398,18 @@ class Layer(JavaValue, SharedStaticUtils):
                                self._to_jtensors(X))
         return np.stack(result)
 
-    def predict(self, features):
+    def predict(self, features, batch_size = -1):
         """
         Model inference base on the given data.
         :param features: it can be a ndarray or list of ndarray for locally inference
                          or RDD[Sample] for running in distributed fashion
+        :param batch_size: total batch size of prediction.
         :return: ndarray or RDD[Sample] depend on the the type of features.
         """
         if isinstance(features, RDD):
-            return self.predict_distributed(features)
+            return self.predict_distributed(features, batch_size)
         else:
-            return self.predict_local(features)
+            return self.predict_local(features, batch_size)
 
     def predict_class(self, features):
         """
@@ -413,17 +423,18 @@ class Layer(JavaValue, SharedStaticUtils):
         else:
             return self.predict_class_local(features)
 
-    def predict_distributed(self, data_rdd):
+    def predict_distributed(self, data_rdd, batch_size = -1):
         """
         Model inference base on the given data.
         You need to invoke collect() to trigger those action \
         as the returning result is an RDD.
 
         :param data_rdd: the data to be predict.
+        :param batch_size: total batch size of prediction.
         :return: An RDD represent the predict result.
         """
         result = callBigDlFunc(self.bigdl_type,
-                               "modelPredictRDD", self.value, data_rdd)
+                               "modelPredictRDD", self.value, data_rdd, batch_size)
         return result.map(lambda data: data.to_ndarray())
 
     def predict_class_distributed(self, data_rdd):
@@ -717,10 +728,14 @@ class Model(Container):
         if jvalue:
             self.value = jvalue
             self.bigdl_type = bigdl_type
-        elif model_type == "bigdl":
+        elif model_type == "bigdl" and (isinstance(inputs, list) or isinstance(inputs, Node)):
             super(Model, self).__init__(None, bigdl_type,
                                         to_list(inputs),
                                         to_list(outputs))
+        elif model_type == "bigdl" and isinstance(inputs, Layer):
+            self.value = callBigDlFunc(
+                bigdl_type, "createModelPreprocessor", inputs, outputs)
+            self.bigdl_type = bigdl_type
         else:
             from bigdl.util.tf_utils import convert
             model = convert(to_list(inputs), to_list(outputs), byte_order, bigdl_type)
@@ -823,7 +838,7 @@ class Model(Container):
 
     @staticmethod
     def load_tensorflow(path, inputs, outputs, byte_order = "little_endian",
-                        bin_file = None, bigdl_type="float"):
+                        bin_file = None, generated_backward = True, bigdl_type = "float"):
         """
         Load a pre-trained Tensorflow model.
         :param path: The path containing the pre-trained model.
@@ -831,9 +846,11 @@ class Model(Container):
         :param outputs: The output node of this graph
         :param byte_order: byte_order of the file, `little_endian` or `big_endian`
         :param bin_file: the optional bin file produced by bigdl dump_model util function to store the weights
+        :param generated_backward: if generate backward graph
         :return: A pre-trained model.
         """
-        jmodel = callBigDlFunc(bigdl_type, "loadTF", path, inputs, outputs, byte_order, bin_file)
+        jmodel = callBigDlFunc(bigdl_type, "loadTF", path, inputs, outputs,
+                               byte_order, bin_file, generated_backward)
         return Model.of(jmodel)
 
     @staticmethod

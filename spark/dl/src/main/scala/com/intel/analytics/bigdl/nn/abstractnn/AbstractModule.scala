@@ -169,6 +169,20 @@ abstract class AbstractModule[A <: Activity: ClassTag, B <: Activity: ClassTag, 
   }
 
   /**
+   * Get the forward/backward cost time for the module or its submodules
+   * and group by module type.
+   * @return (module type name, forward time, backward time)
+   */
+  final def getTimesGroupByModuleType():
+      Array[(String, Long, Long)] = {
+    this.getTimes().map(v => (v._1.getClass().getName(), v._2, v._3)).groupBy(_._1)
+      .map(v => (v._1, v._2.reduce((a, b) => (v._1, a._2 + b._2, a._3 + b._3))))
+      .map(v => (v._1, v._2._2, v._2._3))
+      .toArray
+      .sortWith((a, b) => (a._2 + a._3) > (b._2 + b._3))
+  }
+
+  /**
    * Reset the forward/backward record time for the module or its submodules
    * @return
    */
@@ -306,7 +320,7 @@ abstract class AbstractModule[A <: Activity: ClassTag, B <: Activity: ClassTag, 
    * If the module has parameters, this will zero the accumulation of the gradients with respect
    * to these parameters. Otherwise, it does nothing.
    */
-  final def zeroGradParameters(): Unit = {
+  def zeroGradParameters(): Unit = {
     if (parameters() != null) {
       parameters()._1.zip(parameters()._2)foreach{ case (weight, grad) =>
         grad.resizeAs(weight).zero()
@@ -453,7 +467,7 @@ abstract class AbstractModule[A <: Activity: ClassTag, B <: Activity: ClassTag, 
    * Clone the model
    * @return
    */
-  final def cloneModule(): AbstractModule[A, B, T] = {
+  final def cloneModule(): this.type = {
     SerializationUtils.clone(this)
   }
 
@@ -651,8 +665,11 @@ abstract class AbstractModule[A <: Activity: ClassTag, B <: Activity: ClassTag, 
         Predictor(this, featurePaddingParam, batchPerPartition)
           .predictImage(distributedImageFrame, outputLayer, shareBuffer, predictKey)
       case localImageFrame: LocalImageFrame =>
-        LocalPredictor(this, featurePaddingParam, batchPerPartition)
-          .predictImage(localImageFrame, outputLayer, shareBuffer, predictKey)
+        val predictor = LocalPredictor(this, featurePaddingParam, batchPerPartition)
+        val imageFrame = predictor.predictImage(localImageFrame, outputLayer, shareBuffer,
+          predictKey)
+        predictor.shutdown()
+        imageFrame
     }
   }
 
@@ -834,6 +851,30 @@ abstract class AbstractModule[A <: Activity: ClassTag, B <: Activity: ClassTag, 
   }
 
   /**
+   * use ValidationMethod to evaluate module on the given ImageFrame
+   *  @param imageFrame ImageFrame for valudation
+   *  @param vMethods validation methods
+   *  @param batchSize total batch size of all partitions
+   *  @return
+   */
+
+  final def evaluateImage(imageFrame: ImageFrame,
+    vMethods: Array[_ <:ValidationMethod[T]],
+    batchSize: Option[Int] = None
+    ): Array[(ValidationResult, ValidationMethod[T])] = {
+    require(imageFrame.isDistributed(), "ImageFrame must be distributed")
+    val rdd = imageFrame.toDistributed().rdd.map(imageFeature => {
+      if (imageFeature.isValid) {
+        require(imageFeature.contains(ImageFeature.sample), "ImageFeature must have sample")
+        imageFeature[Sample[T]](ImageFeature.sample)
+      } else {
+        null
+      }
+    }).filter(_ != null)
+    evaluate(rdd, vMethods, batchSize)
+  }
+
+  /**
    * use ValidationMethod to evaluate module on the given local dataset
    * @param dataSet
    * @param vMethods
@@ -882,6 +923,14 @@ abstract class AbstractModule[A <: Activity: ClassTag, B <: Activity: ClassTag, 
    */
   private var name : String = null
 
+  private var id: Int = 0
+
+  private[bigdl] def setId(id: Int): Unit = {
+    this.id = id
+  }
+
+  private[bigdl] def getId(): Int = this.id
+
   protected final def getPrintName(): String = {
     val postfix = if (name == null) {
       namePostfix
@@ -913,6 +962,10 @@ abstract class AbstractModule[A <: Activity: ClassTag, B <: Activity: ClassTag, 
    */
   final private[bigdl] def getParameters(): (Tensor[T], Tensor[T]) = {
     val (weightParameters, gradParameters) = this.parameters()
+
+    // maybe null if not weights in this module.
+    require(weightParameters != null && weightParameters.length > 0,
+      s"model ${this.getName()} doesn't have any trainable parameters.")
 
     // If some gradParameters are not allocated storage, allocate it
     require(weightParameters.size == gradParameters.size,
@@ -1056,5 +1109,11 @@ abstract class AbstractModule[A <: Activity: ClassTag, B <: Activity: ClassTag, 
    * @return
    */
   private[nn] def skipDuplicateCheck(): Boolean = false
+
+  /**
+   * if the model contains native resources such as aligned memory, we should release it by manual.
+   * JVM GC can't release them reliably.
+   */
+  def release(): Unit = {}
 }
 

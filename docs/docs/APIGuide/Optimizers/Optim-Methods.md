@@ -6,7 +6,7 @@ val optim = new Adam(learningRate=1e-3, learningRateDecay=0.0, beta1=0.9, beta2=
 ```
 **Python:**
 ```python
-optim = Adam(learningRate=1e-3, learningRateDecay-0.0, beta1=0.9, beta2=0.999, Epsilon=1e-8, bigdl_type="float")
+optim = Adam(learningrate=1e-3, learningrate_decay=0.0, beta1=0.9, beta2=0.999, epsilon=1e-8, bigdl_type="float")
 ```
 
 An implementation of Adam optimization, first-order gradient-based optimization of stochastic  objective  functions. http://arxiv.org/pdf/1412.6980.pdf
@@ -252,6 +252,7 @@ x after optimize: 0.27779138
 [com.intel.analytics.bigdl.tensor.DenseTensor$mcF$sp of size 2]
 ```
 
+## LBFGS ##
 
 **Scala:**
 ```scala
@@ -309,4 +310,65 @@ optimizer = Optimizer(
     batch_size=32)
 ```
 
+## Ftrl ##
 
+**Scala:**
+```scala
+val optimMethod = new Ftrl(
+  learningRate = 1e-3, learningRatePower = -0.5,
+  initialAccumulatorValue = 0.1, l1RegularizationStrength = 0.0,
+  l2RegularizationStrength = 0.0, l2ShrinkageRegularizationStrength = 0.0)
+```
+
+**Python:**
+```python
+optim_method = Ftrl(learningrate = 1e-3, learningrate_power = -0.5, \
+                 initial_accumulator_value = 0.1, l1_regularization_strength = 0.0, \
+                 l2_regularization_strength = 0.0, l2_shrinkage_regularization_strength = 0.0)
+```
+
+An implementation of (Ftrl)[https://www.eecs.tufts.edu/~dsculley/papers/ad-click-prediction.pdf.]
+Support L1 penalty, L2 penalty and shrinkage-type L2 penalty.
+
+**Parameters:**
+
+* learningRate: learning rate
+* learningRatePower: double, must be less or equal to zero. Default is -0.5.
+* initialAccumulatorValue: double, the starting value for accumulators, require zero or positive values. Default is 0.1.
+* l1RegularizationStrength: double, must be greater or equal to zero. Default is zero.
+* l2RegularizationStrength: double, must be greater or equal to zero. Default is zero.
+* l2ShrinkageRegularizationStrength: double, must be greater or equal to zero. Default is zero. This differs from l2RegularizationStrength above. L2 above is a stabilization penalty, whereas this one is a magnitude penalty.
+
+**Scala example:**
+```scala
+val optimMethod = new Ftrl(learningRate = 5e-3, learningRatePower = -0.5,
+  initialAccumulatorValue = 0.01)
+optimizer.setOptimMethod(optimMethod)
+```
+
+**Python example:**
+```python
+optim_method = Ftrl(learningrate = 5e-3, \
+    learningrate_power = -0.5, \
+    initial_accumulator_value = 0.01)
+                  
+optimizer = Optimizer(
+    model=mlp_model,
+    training_rdd=train_data,
+    criterion=ClassNLLCriterion(),
+    optim_method=optim_method,
+    end_trigger=MaxEpoch(20),
+    batch_size=32)
+```
+
+## ParallelAdam ##
+Multi-Thread version of [Adam](#adam).
+
+**Scala:**
+```scala
+val optim = new ParallelAdam(learningRate=1e-3, learningRateDecay=0.0, beta1=0.9, beta2=0.999, Epsilon=1e-8, parallelNum=Engine.coreNumber())
+```
+**Python:**
+```python
+optim = ParallelAdam(learningrate=1e-3, learningrate_decay=0.0, beta1=0.9, beta2=0.999, epsilon=1e-8, parallel_num=get_node_and_core_number()[1], bigdl_type="float")
+```

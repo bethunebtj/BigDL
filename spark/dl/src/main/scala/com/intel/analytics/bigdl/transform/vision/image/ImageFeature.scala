@@ -213,7 +213,7 @@ class ImageFeature extends Serializable {
    * @param toRGB BGR to RGB
    */
   def copyTo[T: ClassTag](storage: Array[T], offset: Int, floatKey: String = ImageFeature.floats,
-    toRGB: Boolean = true)(implicit ev: TensorNumeric[T]): Unit = {
+    toRGB: Boolean = true, greyToRGB: Boolean = false)(implicit ev: TensorNumeric[T]): Unit = {
     val channel = getChannel()
     require(contains(floatKey), s"there should be ${floatKey} in ImageFeature")
     val data = floats(floatKey)
@@ -223,8 +223,10 @@ class ImageFeature extends Serializable {
     require(frameLength * channel + offset <= storage.length)
     if (channel == 3) {
       copyBGR(storage, offset, toRGB, data, frameLength)
-    } else {
+    } else if (!greyToRGB) {
       copyChannels(storage, offset, channel, data, frameLength)
+    } else {
+      copyGreyToRGB(storage, offset, data, frameLength)
     }
   }
 
@@ -296,6 +298,27 @@ class ImageFeature extends Serializable {
     }
   }
 
+  private def copyGreyToRGB[T: ClassTag](storage: Array[T], offset: Int, data: Array[Float],
+    frameLength: Int): Unit = {
+    require(offset + frameLength * 3 <= storage.length,
+      s"tensor storage cannot hold the whole image data, offset $offset " +
+        s"data length ${data.length} storage lenght ${storage.length}")
+    if (classTag[T] == classTag[Float]) {
+      val storageFloat = storage.asInstanceOf[Array[Float]]
+      var c = 0
+      while(c < 3) {
+        var i = 0
+        while(i < frameLength) {
+          storageFloat(i + c * frameLength + offset) = data(i)
+          i += 1
+        }
+        c += 1
+      }
+    } else {
+      throw new IllegalArgumentException("Not support type")
+    }
+  }
+
   /**
    * Convert ImageFeature to image tensor
    * @param floatKey key that maps the float array
@@ -320,6 +343,17 @@ class ImageFeature extends Serializable {
       image = image.transpose(1, 3).transpose(2, 3).contiguous()
     }
     image
+  }
+
+  /**
+   * set label for imagefeature from label map
+   */
+
+  def setLabel(labelMap: mutable.Map[String, Float]): Unit = {
+    val uri = this.uri
+    if (labelMap.contains(uri)) {
+      this(ImageFeature.label) = Tensor[Float](T(labelMap(uri)))
+    }
   }
 }
 

@@ -18,6 +18,7 @@ import pytest
 import os
 from bigdl.util.common import *
 from bigdl.transform.vision.image import *
+import tempfile
 
 
 class TestLayer():
@@ -37,6 +38,14 @@ class TestLayer():
         call.
         """
         self.sc.stop()
+
+    def test_get_sample(self):
+        image_frame = ImageFrame.read(self.image_path)
+        transformer = Pipeline([PixelBytesToMat(), Resize(256, 256), CenterCrop(224, 224),
+                                ChannelNormalize(0.485, 0.456, 0.406, 0.229, 0.224, 0.225),
+                                MatToTensor(), ImageFrameToSample()])
+        transformed = transformer(image_frame)
+        transformed.get_sample()
 
     def transformer_test(self, transformer):
         image_frame = ImageFrame.read(self.image_path)
@@ -190,6 +199,25 @@ class TestLayer():
         image_frame = ImageFrame.read(self.image_path, self.sc)
         image_frame.get_predict()
 
+    def test_read_write_parquet(self):
+        temp = tempfile.mkdtemp() + "testParquet/"
+        resource_path = os.path.join(os.path.split(__file__)[0], "../resources/pascal")
+        ImageFrame.write_parquet(resource_path, temp, self.sc, 1)
+        read_image_frame = ImageFrame.read_parquet(temp, self.sc)
+
+    def test_set_label(self):
+        resource_path = os.path.join(os.path.split(__file__)[0], "../resources/pascal")
+        imageFrame = ImageFrame.read(resource_path, self.sc)
+        uris = imageFrame.get_uri().collect()
+        label = {}
+        for uri in uris:
+            label[uri] = 10
+        imageFrame.set_label(label)
+
+    def test_random_split(self):
+        resource_path = os.path.join(os.path.split(__file__)[0], "../resources/pascal")
+        imageFrame = ImageFrame.read(resource_path, self.sc)
+        splits = imageFrame.random_split([1.0])
 
 if __name__ == "__main__":
     pytest.main([__file__])

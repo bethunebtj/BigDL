@@ -68,10 +68,19 @@ abstract class Container[A <: Activity : ClassTag,
 
   override def getTimes():
     Array[(AbstractModule[_ <: Activity, _ <: Activity, T], Long, Long)] = {
-    this.modules.flatMap(_.getTimes()).toArray
+    if (modules.isEmpty) {
+      return Array((this, forwardTime, backwardTime))
+    }
+    val subModuleTimes = this.modules.flatMap(_.getTimes()).toArray
+
+    val (subModuleForward, subModuleBackward) = Utils.calculateFwdBwdTime(subModuleTimes)
+
+    subModuleTimes ++ Array((this, this.forwardTime - subModuleForward,
+      this.backwardTime - subModuleBackward))
   }
 
   override def resetTimes(): Unit = {
+    super.resetTimes()
     modules.foreach(_.resetTimes())
   }
 
@@ -217,5 +226,9 @@ abstract class Container[A <: Activity : ClassTag,
   ): Unit = {
     super.checkDuplicate(record)
     if (!skipDuplicateCheck()) modules.foreach(_.checkDuplicate(record))
+  }
+
+  override def release(): Unit = {
+    modules.foreach(_.release())
   }
 }

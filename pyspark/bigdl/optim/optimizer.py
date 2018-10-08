@@ -28,7 +28,8 @@ from bigdl.util.common import JTensor
 from bigdl.util.common import JavaValue
 from bigdl.util.common import callBigDlFunc
 from bigdl.util.common import callJavaFunc
-from bigdl.util.common import get_spark_context
+from bigdl.util.common import get_node_and_core_number
+from bigdl.util.common import init_engine
 from bigdl.util.common import to_list
 from bigdl.dataset.dataset import *
 
@@ -86,6 +87,40 @@ class Loss(JavaValue):
         if cri is None:
             cri = ClassNLLCriterion()
         JavaValue.__init__(self, None, bigdl_type, cri)
+
+class HitRatio(JavaValue):
+    """
+    Hit Ratio(HR) used in recommandation application.
+    HR intuitively measures whether the test item is present on the top-k list.
+
+    >>> hr10 = HitRatio(k = 10)
+    creating: createHitRatio
+    """
+    def __init__(self, k = 10, neg_num = 100, bigdl_type="float"):
+        """
+        Create hit ratio validation method.
+
+        :param k: top k
+        :param neg_num: number of negative items.
+        """
+        JavaValue.__init__(self, None, bigdl_type, k, neg_num)
+
+class NDCG(JavaValue):
+    """
+    Normalized Discounted Cumulative Gain(NDCG).
+    NDCG accounts for the position of the hit by assigning higher scores to hits at top ranks.
+
+    >>> ndcg = NDCG(k = 10)
+    creating: createNDCG
+    """
+    def __init__(self, k = 10, neg_num = 100, bigdl_type="float"):
+        """
+        Create NDCG validation method.
+
+        :param k: top k
+        :param neg_num: number of negative items.
+        """
+        JavaValue.__init__(self, None, bigdl_type, k, neg_num)
 
 class MAE(JavaValue):
     """
@@ -498,7 +533,7 @@ class Adam(OptimMethod):
     :param beta1 first moment coefficient
     :param beta2 second moment coefficient
     :param epsilon for numerical stability
-    >>> adagrad = Adam()
+    >>> adam = Adam()
     creating: createAdam
     """
     def __init__(self,
@@ -510,6 +545,64 @@ class Adam(OptimMethod):
                  bigdl_type="float"):
         super(Adam, self).__init__(None, bigdl_type, learningrate, learningrate_decay,
                            beta1, beta2, epsilon)
+
+class ParallelAdam(OptimMethod):
+    """
+    An implementation of Adam http://arxiv.org/pdf/1412.6980.pdf
+    :param learningrate learning rate
+    :param learningrate_decay learning rate decay
+    :param beta1 first moment coefficient
+    :param beta2 second moment coefficient
+    :param epsilon for numerical stability
+    >>> init_engine()
+    >>> pAdam = ParallelAdam()
+    creating: createParallelAdam
+    """
+    def __init__(self,
+                 learningrate = 1e-3,
+                 learningrate_decay = 0.0,
+                 beta1 = 0.9,
+                 beta2 = 0.999,
+                 epsilon = 1e-8,
+                 parallel_num = -1,
+                 bigdl_type="float"):
+        if parallel_num == -1:
+            parallel_num = get_node_and_core_number()[1]
+        super(ParallelAdam, self).__init__(None, bigdl_type, learningrate, learningrate_decay,
+                                   beta1, beta2, epsilon, parallel_num)
+
+class Ftrl(OptimMethod):
+    """
+    An implementation of Ftrl https://www.eecs.tufts.edu/~dsculley/papers/ad-click-prediction.pdf.
+    Support L1 penalty, L2 penalty and shrinkage-type L2 penalty.
+
+    :param learningrate learning rate
+    :param learningrate_power double, must be less or equal to zero. Default is -0.5.
+    :param initial_accumulator_value double, the starting value for accumulators,
+        require zero or positive values.
+    :param l1_regularization_strength double, must be greater or equal to zero. Default is zero.
+    :param l2_regularization_strength double, must be greater or equal to zero. Default is zero.
+    :param l2_shrinkage_regularization_strength double, must be greater or equal to zero.
+        Default is zero. This differs from l2RegularizationStrength above. L2 above is a
+        stabilization penalty, whereas this one is a magnitude penalty.
+    >>> ftrl = Ftrl()
+    creating: createFtrl
+    >>> ftrl2 = Ftrl(1e-2, -0.1, 0.2, 0.3, 0.4, 0.5)
+    creating: createFtrl
+    """
+    def __init__(self,
+                 learningrate = 1e-3,
+                 learningrate_power = -0.5,
+                 initial_accumulator_value = 0.1,
+                 l1_regularization_strength = 0.0,
+                 l2_regularization_strength = 0.0,
+                 l2_shrinkage_regularization_strength = 0.0,
+                 bigdl_type="float"):
+        super(Ftrl, self).__init__(None, bigdl_type, learningrate, learningrate_power,
+                                   initial_accumulator_value,
+                                   l1_regularization_strength,
+                                   l2_regularization_strength,
+                                   l2_shrinkage_regularization_strength)
 
 class Adamax(OptimMethod):
     """
@@ -813,16 +906,23 @@ class DistriOptimizer(Optimizer):
         :param end_trigger: when to end the optimization
         :param batch_size: training batch size
         """
+        if not optim_method:
+            optim_methods = {model.name(): SGD()}
+        elif isinstance(optim_method, OptimMethod):
+            optim_methods = {model.name(): optim_method}
+        elif isinstance(optim_method, JavaObject):
+            optim_methods = {model.name(): OptimMethod(optim_method, bigdl_type)}
+        else:
+            optim_methods = optim_method
         if isinstance(training_rdd, RDD):
             JavaValue.__init__(self, None, bigdl_type, model.value,
                                training_rdd, criterion,
-                               optim_method if optim_method else SGD(), end_trigger, batch_size)
+                               optim_methods, end_trigger, batch_size)
         elif isinstance(training_rdd, DataSet):
             self.bigdl_type = bigdl_type
             self.value = callBigDlFunc(self.bigdl_type, "createDistriOptimizerFromDataSet",
                                        model.value, training_rdd, criterion,
-                                       optim_method if optim_method else SGD(),
-                                       end_trigger, batch_size)
+                                       optim_methods, end_trigger, batch_size)
 
 
 class LocalOptimizer(BaseOptimizer):
@@ -850,6 +950,14 @@ class LocalOptimizer(BaseOptimizer):
                  optim_method=None,
                  cores=None,
                  bigdl_type="float"):
+        if not optim_method:
+            optim_methods = {model.name(): SGD()}
+        elif isinstance(optim_method, OptimMethod):
+            optim_methods = {model.name(): optim_method}
+        elif isinstance(optim_method, JavaObject):
+            optim_methods = {model.name(): OptimMethod(optim_method, bigdl_type)}
+        else:
+            optim_methods = optim_method
         if cores is None:
             cores = multiprocessing.cpu_count()
         JavaValue.__init__(self, None, bigdl_type,
@@ -857,7 +965,7 @@ class LocalOptimizer(BaseOptimizer):
                            JTensor.from_ndarray(Y),
                            model.value,
                            criterion,
-                           optim_method if optim_method else SGD(), end_trigger, batch_size, cores)
+                           optim_methods, end_trigger, batch_size, cores)
 
     def set_validation(self, batch_size, X_val, Y_val, trigger, val_method=None):
         """

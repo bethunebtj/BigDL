@@ -69,8 +69,6 @@ class Recurrent[T : ClassTag](
   protected var preTopology: AbstractModule[Activity, Activity, T] = null
   private val dropouts: ArrayBuffer[Array[Dropout[T]]] =
     new ArrayBuffer[Array[Dropout[T]]]
-  private val timeBuffer =
-    new ArrayBuffer[(AbstractModule[_ <: Activity, _ <: Activity, T], Long, Long)]
   private var layer: TensorModule[T] = null
   private var maskBuffer: Tensor[T] = Tensor()
   private var gradOutputBuff: Table = T()
@@ -175,6 +173,12 @@ class Recurrent[T : ClassTag](
       val cloneCell = cells.head.cloneModule()
       cloneCell.parameters()._1.map(_.set())
       cloneCell.parameters()._2.map(_.set())
+      // preTopology's output is useless here, clear it.
+      // Notice: preTopology is a merge output of all i2h,
+      // it's a bigdl tensor, and shouldn't be cloned.
+      if (cloneCell.preTopology != null) {
+        cloneCell.preTopology.output.set()
+      }
       while (t < times) {
         cells += cloneCell.cloneModule()
           .asInstanceOf[Cell[T]]
@@ -444,7 +448,7 @@ class Recurrent[T : ClassTag](
   }
 
   override def backward(input: Tensor[T], gradOutput: Tensor[T]): Tensor[T] = {
-    val st = System.nanoTime
+    val before = System.nanoTime
     currentGradOutput(hidDim) = gradHidden
     var i = times
 
@@ -514,64 +518,38 @@ class Recurrent[T : ClassTag](
       gradInput = preTopology.backward(input, gradInput2Cell).toTensor[T]
     }
 
-    this.backwardTime = System.nanoTime - st
+    this.backwardTime += System.nanoTime - before
     gradInput
   }
 
-  private def appendTimes(module: Module[T]): Unit = {
-    if (module != null) {
-      module.getTimes.foreach(x => {
-        timeBuffer.append(x)
-      })
-    }
-  }
+  override def getTimes(): Array[(AbstractModule[_ <: Activity, _ <: Activity, T], Long, Long)] = {
+    val timeBuffer =
+      new ArrayBuffer[(AbstractModule[_ <: Activity, _ <: Activity, T], Long, Long)]
 
-  private def bufferTime(): (Long, Long) = {
-    var forwardSum = 0L
-    var backwardSum = 0L
-    timeBuffer.foreach(x => {
-      forwardSum += x._2
-      backwardSum += x._3
-    })
-    (forwardSum, backwardSum)
-  }
-
-  override def getTimes():
-  Array[(AbstractModule[_ <: Activity, _ <: Activity, T], Long, Long)] = {
-    timeBuffer.clear
-
-    val head = if (!cells.isEmpty) {
-      cells.head
-    } else null
-
-    var i = 1
-    while (i < times) {
-      head.addTimes(cells(i))
-      i += 1
+    if (!cells.isEmpty) {
+      timeBuffer.append(
+        cells.flatMap(_.getTimes()).reduce((a, b) => (a._1, a._2 + b._2, a._3 + b._3)))
     }
 
-    appendTimes(preTopology)
-    appendTimes(head)
+    if (preTopology != null) {
+      timeBuffer.appendAll(preTopology.getTimes())
+    }
 
-    val (bufferForward, bufferBackward) = bufferTime()
+    val (bufferForward, bufferBackward) =
+      timeBuffer.map(t => (t._2, t._3)).reduce((a, b) => (a._1 + b._1, a._2 + b._2))
     timeBuffer.append(
       (this,
-        this.forwardTime - bufferForward,
-        this.backwardTime - bufferBackward))
+        forwardTime - bufferForward,
+        backwardTime - bufferBackward))
     timeBuffer.toArray
   }
 
   override def resetTimes(): Unit = {
+    super.resetTimes()
     if (preTopology != null) {
       preTopology.resetTimes
     }
-    var i = 0
-    while (i < times) {
-      cells(i).resetTimes
-      i += 1
-    }
-    this.forwardTime = 0
-    this.backwardTime = 0
+    cells.foreach(_.resetTimes())
   }
 
   override def clearState() : this.type = {
@@ -586,7 +564,6 @@ class Recurrent[T : ClassTag](
     _input.clear()
     cells.foreach(x => x.clearState())
     cells.clear()
-    timeBuffer.clear()
     initHiddenState = null
     stepInput2CellBuf.set()
     stepGradBuffer.set()

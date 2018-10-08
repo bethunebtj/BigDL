@@ -113,10 +113,15 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
   def activityToJTensors(outputActivity: Activity): JList[JTensor] = {
     if (outputActivity.isInstanceOf[Tensor[T]]) {
       List(toJTensor(outputActivity.toTensor)).asJava
-    } else {
+    } else if (outputActivity.isInstanceOf[Table]) {
       outputActivity.toTable.getState().toList.map {
         pair => (pair._1.asInstanceOf[Int], toJTensor(pair._2.asInstanceOf[Tensor[T]]))
       }.sortWith(_._1 < _._1).map(pair => pair._2).asJava
+    } else if (outputActivity.isInstanceOf[EmptyGradInput]) {
+      List[JTensor]().asJava
+    } else {
+      throw new UnsupportedOperationException(s"Activity type" +
+        s"(${outputActivity.getClass.getName}) not support")
     }
   }
 
@@ -246,12 +251,13 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
     dataset -> SampleToMiniBatch[T](batchSize)
   }
 
-  private def enrichOptimizer[T](optimizer: Optimizer[T, MiniBatch[T]],
-                                 endTrigger: Trigger,
-                                 optimMethod: OptimMethod[T]): Optimizer[T, MiniBatch[T]] = {
+  private def enrichOptimizer[T](
+        optimizer: Optimizer[T, MiniBatch[T]],
+        endTrigger: Trigger,
+        optimMethod: Map[String, OptimMethod[T]]): Optimizer[T, MiniBatch[T]] = {
     optimizer.setEndWhen(endTrigger)
 
-    optimizer.setOptimMethod(optimMethod)
+    optimizer.setOptimMethods(optimMethod)
 
     // TODO: remove this
     optimizer.disableCheckSingleton()
@@ -1831,6 +1837,21 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
     testResultArray.toList.asJava
   }
 
+
+  def modelEvaluateImageFrame(model: AbstractModule[Activity, Activity, T],
+                    imageFrame: ImageFrame,
+                    batchSize: Int,
+                    valMethods: JList[ValidationMethod[T]])
+  : JList[EvaluatedResult] = {
+    val resultArray = model.evaluateImage(imageFrame,
+      valMethods.asScala.toArray, Some(batchSize))
+    val testResultArray = resultArray.map { result =>
+      EvaluatedResult(result._1.result()._1, result._1.result()._2,
+        result._2.toString())
+    }
+    testResultArray.toList.asJava
+  }
+
   def loadBigDL(path: String): AbstractModule[Activity, Activity, T] = {
     Module.load[T](path)
   }
@@ -1856,13 +1877,15 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
   }
 
   def loadTF(path: String, inputs: JList[String], outputs: JList[String],
-    byteOrder: String, binFile: String = null): AbstractModule[Activity, Activity, T] = {
+        byteOrder: String, binFile: String = null,
+        generatedBackward: Boolean = true): AbstractModule[Activity, Activity, T] = {
     val order = byteOrder match {
       case "little_endian" => ByteOrder.LITTLE_ENDIAN
       case "big_endian" => ByteOrder.BIG_ENDIAN
       case _ => throw new IllegalArgumentException(s"No support byte order $byteOrder")
     }
-    Module.loadTF[T](path, inputs.asScala, outputs.asScala, order, Option(binFile))
+    Module.loadTF[T](path, inputs.asScala, outputs.asScala, order,
+      Option(binFile), generatedBackward)
   }
 
   def saveTF(model: AbstractModule[Activity, Activity, T],
@@ -1891,9 +1914,18 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
   }
 
   def predictLocal(model: AbstractModule[Activity, Activity, T],
-                   features: JList[JTensor]): JList[JTensor] = {
+                   features: JList[JTensor], batchSize: Int = -1): JList[JTensor] = {
     val sampleArray = toSampleArray(features.asScala.toList.map{f => toTensor(f)})
-    val localPredictor = LocalPredictor(model)
+    val localPredictor = if (batchSize > 0) {
+      val batchPerCore = batchSize / Engine.coreNumber()
+      if (batchPerCore < 1) {
+        LocalPredictor(model, batchPerCore = 1)
+      } else {
+        LocalPredictor(model, batchPerCore = batchPerCore)
+      }
+    } else {
+      LocalPredictor(model)
+    }
     val result = localPredictor.predict(sampleArray)
     result.map{a => toJTensor(a.asInstanceOf[Tensor[T]])}.toList.asJava
   }
@@ -1907,8 +1939,8 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
   }
 
   def modelPredictRDD(model: AbstractModule[Activity, Activity, T],
-                      dataRdd: JavaRDD[Sample]): JavaRDD[JTensor] = {
-    val tensorRDD = model.predict(dataRdd.rdd.map(toJSample(_)))
+                      dataRdd: JavaRDD[Sample], batchSize: Int = -1): JavaRDD[JTensor] = {
+    val tensorRDD = model.predict(dataRdd.rdd.map(toJSample(_)), batchSize)
     val listRDD = tensorRDD.map { res =>
       val tensor = res.asInstanceOf[Tensor[T]]
       val cloneTensor = tensor.clone()
@@ -2040,6 +2072,14 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
     new Top1Accuracy()
   }
 
+  def createHitRatio(k: Int = 10, negNum: Int = 100): ValidationMethod[T] = {
+    new HitRatio(k, negNum)
+  }
+
+  def createNDCG(k: Int = 10, negNum: Int = 100): ValidationMethod[T] = {
+    new NDCG(k, negNum)
+  }
+
   def createTreeNNAccuracy(): ValidationMethod[T] = {
     new TreeNNAccuracy()
   }
@@ -2104,6 +2144,31 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
     new Adam[T](learningRate, learningRateDecay, beta1, beta2, Epsilon)
   }
 
+  def createParallelAdam(
+        learningRate: Double = 1e-3,
+        learningRateDecay: Double = 0.0,
+        beta1: Double = 0.9,
+        beta2: Double = 0.999,
+        Epsilon: Double = 1e-8,
+        parallelNum: Int = Engine.coreNumber()): ParallelAdam[T] = {
+    new ParallelAdam[T](learningRate, learningRateDecay, beta1, beta2, Epsilon, parallelNum)
+  }
+
+  def createFtrl(
+      learningRate: Double = 1e-3,
+      learningRatePower: Double = -0.5,
+      initialAccumulatorValue: Double = 0.1,
+      l1RegularizationStrength: Double = 0.0,
+      l2RegularizationStrength: Double = 0.0,
+      l2ShrinkageRegularizationStrength: Double = 0.0): Ftrl[T] = {
+    new Ftrl[T](learningRate,
+      learningRatePower,
+      initialAccumulatorValue,
+      l1RegularizationStrength,
+      l2RegularizationStrength,
+      l2ShrinkageRegularizationStrength)
+  }
+
   def createAdamax(
     learningRate: Double = 0.002,
     beta1: Double = 0.9,
@@ -2159,7 +2224,7 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
                            y: JTensor,
                            model: AbstractModule[Activity, Activity, T],
                            criterion: Criterion[T],
-                           optimMethod: OptimMethod[T],
+                           optimMethod: JMap[String, OptimMethod[T]],
                            endTrigger: Trigger,
                            batchSize: Int,
                            localCores: Int): Optimizer[T, MiniBatch[T]] = {
@@ -2171,13 +2236,13 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
       criterion
     ).asInstanceOf[Optimizer[T, MiniBatch[T]]]
     Engine.setNodeAndCore(1, localCores)
-    enrichOptimizer(optimizer, endTrigger, optimMethod)
+    enrichOptimizer[T](optimizer, endTrigger, optimMethod.asScala.toMap)
   }
 
   def createDistriOptimizer(model: AbstractModule[Activity, Activity, T],
                             trainingRdd: JavaRDD[Sample],
                             criterion: Criterion[T],
-                            optimMethod: OptimMethod[T],
+                            optimMethod: JMap[String, OptimMethod[T]],
                             endTrigger: Trigger,
                             batchSize: Int): Optimizer[T, MiniBatch[T]] = {
     val sampleRDD = toJSample(trainingRdd)
@@ -2188,13 +2253,13 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
         .asInstanceOf[DistributedDataSet[MiniBatch[T]]],
       _criterion = criterion
     ).asInstanceOf[Optimizer[T, MiniBatch[T]]]
-    enrichOptimizer(optimizer, endTrigger, optimMethod)
+    enrichOptimizer(optimizer, endTrigger, optimMethod.asScala.toMap)
   }
 
   def createDistriOptimizerFromDataSet(model: AbstractModule[Activity, Activity, T],
     trainDataSet: DataSet[ImageFeature],
     criterion: Criterion[T],
-    optimMethod: OptimMethod[T],
+    optimMethod: JMap[String, OptimMethod[T]],
     endTrigger: Trigger,
     batchSize: Int): Optimizer[T, MiniBatch[T]] = {
     val dataSet = trainDataSet -> ImageFeatureToMiniBatch[T](batchSize)
@@ -2204,7 +2269,7 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
       _dataset = dataSet.asInstanceOf[DistributedDataSet[MiniBatch[T]]],
       _criterion = criterion
     ).asInstanceOf[Optimizer[T, MiniBatch[T]]]
-    enrichOptimizer(optimizer, endTrigger, optimMethod)
+    enrichOptimizer(optimizer, endTrigger, optimMethod.asScala.toMap)
   }
 
   def featureTransformDataset(dataset: DataSet[ImageFeature],
@@ -2314,6 +2379,11 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
   def createModel(input: JList[ModuleNode[T]],
                   output: JList[ModuleNode[T]]): Graph[T] = {
     Graph(input.asScala.toArray, output.asScala.toArray)
+  }
+
+  def createModelPreprocessor(preprocessor: AbstractModule[Activity, Activity, T],
+    trainable: AbstractModule[Activity, Activity, T]): Graph[T] = {
+    Graph(preprocessor, trainable)
   }
 
   def createNode(module: AbstractModule[Activity, Activity, T],
@@ -2849,6 +2919,10 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
     imageFrame.transform(transformer)
   }
 
+  def setLabel(labelMap: JMap[String, Float], imageFrame: ImageFrame): Unit = {
+    imageFrame.setLabel(labelMap.asScala)
+  }
+
   def createDistributedImageFrame(imageRdd: JavaRDD[JTensor], labelRdd: JavaRDD[JTensor])
   : DistributedImageFrame = {
     require(null != imageRdd, "imageRdd cannot be null")
@@ -2929,6 +3003,53 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
     })
   }
 
+  def distributedImageFrameToSample(imageFrame: DistributedImageFrame, key: String):
+  JavaRDD[Sample] = {
+    imageFrame.rdd.map(x => {
+      if (x.isValid && x.contains(key)) {
+        toPySample(x[JSample[T]](key))
+      } else {
+        null
+      }
+    })
+  }
+
+  def distributedImageFrameToUri(imageFrame: DistributedImageFrame, key: String):
+    JavaRDD[String] = {
+    imageFrame.rdd.map(x => {
+      if (x.contains(key)) {
+        x[String](key)
+      } else {
+        null
+      }
+    })
+  }
+
+  def distributedImageFrameRandomSplit(imageFrame: DistributedImageFrame,
+    weights: JList[Double]): Array[ImageFrame] = {
+    return imageFrame.randomSplit(weights.asScala.toArray)
+  }
+
+  def localImageFrameToUri(imageFrame: LocalImageFrame, key: String): JList[String] = {
+    imageFrame.array.map(x => {
+      if (x.contains(key)) {
+        x[String](key)
+      } else {
+        null
+      }
+    }).toList.asJava
+  }
+
+  def localImageFrameToSample(imageFrame: LocalImageFrame, key: String): JList[Sample] = {
+    imageFrame.array.map(x => {
+      if (x.isValid && x.contains(key)) {
+        toPySample(x[JSample[T]](key))
+      } else {
+        null
+      }
+    }).toList.asJava
+  }
+
   def localImageFrameToPredict(imageFrame: LocalImageFrame, key: String)
   : JList[JList[Any]] = {
     imageFrame.array.map(x =>
@@ -2970,8 +3091,15 @@ class PythonBigDL[T: ClassTag](implicit ev: TensorNumeric[T]) extends Serializab
     }
   }
 
-  def readParquet(path: String, sqlContext: SQLContext): DistributedImageFrame = {
+  def readParquet(path: String, sc: JavaSparkContext): DistributedImageFrame = {
+    val sqlContext = new SQLContext(sc)
     ImageFrame.readParquet(path, sqlContext)
+  }
+
+  def writeParquet(path: String, output: String,
+                   sc: JavaSparkContext, partitionNum: Int = 1): Unit = {
+    val sqlContext = new SQLContext(sc)
+    ImageFrame.writeParquet(path, output, sqlContext, partitionNum)
   }
 
   def createBytesToMat(byteKey: String): BytesToMat = {

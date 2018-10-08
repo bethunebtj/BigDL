@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import org.apache.log4j.Logger
 import org.apache.spark._
 import com.intel.analytics.bigdl.mkl.MKL
+import com.intel.analytics.bigdl.mkl.hardware.CpuInfo
 import org.apache.spark.utils.SparkUtils
 import py4j.GatewayServer
 
@@ -34,9 +35,17 @@ import scala.util.control.{ControlThrowable, NonFatal}
 sealed trait EngineType
 
 case object MklBlas extends EngineType
+case object MklDnn extends EngineType
 
 
 object Engine {
+
+  // Initialize some properties for mkldnn engine. We should call it at the beginning.
+  // Otherwise some properties will have no effect.
+  if (System.getProperty("bigdl.engineType") == "mkldnn") {
+    setMklDnnEnvironments()
+  }
+
   @deprecated(
     "See https://bigdl-project.github.io/master/#APIGuide/Engine/",
     "0.1.0")
@@ -115,7 +124,6 @@ object Engine {
 
   @volatile
   private var gatewayServer: py4j.GatewayServer = null
-  private val driverPortFileCreated = new AtomicBoolean()
 
   private def createGatewayPortFile(port: Int): Unit = {
     val file = new java.io.File(SparkFiles.getRootDirectory(), "gateway_port")
@@ -135,17 +143,6 @@ object Engine {
   }
 
   private[bigdl] def createJavaGateway(driverPort: Int): Unit = {
-    if (SparkUtils.isDriver) {
-      if (driverPortFileCreated.compareAndSet(false, true)) {
-        try {
-          createGatewayPortFile(driverPort)
-        } catch {
-          case NonFatal(e) =>
-            throw new Exception("Could not create java gateway port file", e)
-        }
-      }
-      return
-    }
     if (gatewayServer != null) return
     this.synchronized {
       if (gatewayServer != null) return
@@ -212,6 +209,7 @@ object Engine {
   private var engineType: EngineType = {
     System.getProperty("bigdl.engineType", "mklblas").toLowerCase(Locale.ROOT) match {
       case "mklblas" => MklBlas
+      case "mkldnn" => MklDnn
       case engineType => throw new IllegalArgumentException(s"Unknown engine type $engineType")
     }
   }
@@ -220,7 +218,10 @@ object Engine {
   @volatile private var _default: ThreadPool = null
 
   // Thread pool for layer use
-  @volatile private var _model: ThreadPool = new ThreadPool(1).setMKLThread(MKL.getMklNumThreads)
+  @volatile private var _model: ThreadPool = new ThreadPool(1)
+
+  // Thread pool for read data
+  @volatile private var _io: ThreadPool = null
 
   /**
    * If user undefine the property bigdl.coreNumber, it will return physical core number
@@ -320,6 +321,14 @@ object Engine {
     _default
   }
 
+  private[bigdl] def io: ThreadPool = {
+    if (_io == null) {
+      throw new IllegalStateException(s"Engine.init: Thread engine is not " +
+        s"initialized. $NOT_INIT_ERROR")
+    }
+    _io
+  }
+
   private def initThreadPool(core : Int) : Unit = {
     val defaultPoolSize: Int = System.getProperty("bigdl.utils.Engine.defaultPoolSize",
       (core * 50).toString).toInt
@@ -327,16 +336,21 @@ object Engine {
       _default = new ThreadPool(defaultPoolSize)
     }
 
-    val modelPoolSize: Int = if (engineType == MklBlas) {
-      1
-    } else {
-      core
+    if (_io == null) {
+      _io = new ThreadPool(core * 50)
     }
+
+    // for dnn model we should set the pool size to 1 also.
+    // otherwise, it will downgrade the performance and
+    // FIXME make the loss to NaN.
+    val modelPoolSize = 1
 
     if(_model == null || _model.getPoolSize != modelPoolSize) {
       _model = new ThreadPool(modelPoolSize)
-      _model.setMKLThread(MKL.getMklNumThreads)
     }
+    _model.setMKLThread(MKL.getMklNumThreads)
+
+    ThreadPool.setThreadsOfBackend(MKL.getMklNumThreads)
   }
 
   /**
@@ -524,5 +538,16 @@ object Engine {
     } else {
       throw new IllegalArgumentException(s"Engine.init: Unsupported master format $master")
     }
+  }
+
+  private def setMklDnnEnvironments(): Unit = {
+    val default = Math.ceil(Runtime.getRuntime.availableProcessors().toFloat / 2).toInt
+    val threadsNumber = System.getProperty("bigdl.mklNumThreads", default.toString)
+    System.setProperty("bigdl.mklNumThreads", s"$threadsNumber")
+
+
+    System.setProperty("bigdl.disable.mklBlockTime", "true")
+    System.setProperty("bigdl.coreNumber", "1")
+    System.setProperty("bigdl.utils.Engine.defaultPoolSize", "1")
   }
 }

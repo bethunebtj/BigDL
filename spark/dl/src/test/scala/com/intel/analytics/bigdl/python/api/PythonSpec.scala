@@ -22,11 +22,11 @@ import java.util.{ArrayList => JArrayList, List => JList, Map => JMap}
 import com.intel.analytics.bigdl._
 import com.intel.analytics.bigdl.dataset.DataSet
 import com.intel.analytics.bigdl.nn._
-import com.intel.analytics.bigdl.optim.{Loss, SGD, Top1Accuracy, Trigger}
+import com.intel.analytics.bigdl.optim._
 import com.intel.analytics.bigdl.utils.{Engine, T, Table, TestUtils}
 import com.intel.analytics.bigdl.visualization.{TrainSummary, ValidationSummary}
 import org.apache.log4j.{Level, Logger}
-import org.apache.spark.SparkContext
+import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.bigdl.api.python.BigDLSerDe
 import org.scalatest.{BeforeAndAfter, FlatSpec, Matchers}
@@ -43,11 +43,11 @@ class PythonSpec extends FlatSpec with Matchers with BeforeAndAfter {
   var sc: SparkContext = null
 
   before {
-    sc = new SparkContext(
-      Engine.init(1, 4, true).get
-        .setAppName("Text classification")
-        .set("spark.akka.frameSize", 64.toString)
-        .setMaster("local[2]"))
+    val conf = new SparkConf().setAppName("Text classification")
+      .set("spark.akka.frameSize", 64.toString)
+      .setMaster("local[2]")
+    sc = SparkContext.getOrCreate(conf)
+    Engine.init(1, 4, true)
   }
 
   after {
@@ -196,13 +196,16 @@ class PythonSpec extends FlatSpec with Matchers with BeforeAndAfter {
     model.add(LogSoftMax[Double]())
     val batchSize = 32
     val pp = PythonBigDL.ofDouble()
-    val optimMethod = new SGD[Double]()
-    optimMethod.learningRateSchedule = SGD.Poly(0.5, math.ceil(1281167.toDouble / batchSize).toInt)
+    val sgd = new SGD[Double]()
+    val optimMethod: Map[String, OptimMethod[Double]] =
+      Map(model.getName -> sgd)
+    sgd.learningRateSchedule =
+      SGD.Poly(0.5, math.ceil(1281167.toDouble / batchSize).toInt)
     val optimizer = pp.createDistriOptimizer(
       model,
       data.toJavaRDD(),
       ClassNLLCriterion[Double](),
-      optimMethod,
+      optimMethod.asJava,
       Trigger.maxEpoch(2),
       32)
     pp.setValidation(optimizer = optimizer,
@@ -274,13 +277,14 @@ class PythonSpec extends FlatSpec with Matchers with BeforeAndAfter {
     model.add(ReLU[Double]())
     model.add(LogSoftMax[Double]())
     val batchSize = 32
-    val optimMethod = new SGD[Double]()
+    val optimMethod: Map[String, OptimMethod[Double]] =
+      Map(model.getName() -> new SGD[Double]())
     val optimizer = pp.createLocalOptimizer(
       List(X).asJava,
       y,
       model,
       ClassNLLCriterion[Double](),
-      optimMethod,
+      optimMethod.asJava,
       Trigger.maxEpoch(2),
       32,
       2)
@@ -310,11 +314,13 @@ class PythonSpec extends FlatSpec with Matchers with BeforeAndAfter {
 
     val sgd = new SGD[Float](0.01)
 
+
+    val optimMethod: Map[String, OptimMethod[Float]] = Map(model.getName() -> sgd)
     val pythonBigDL = PythonBigDL.ofFloat()
     val optimizer = pythonBigDL.createDistriOptimizerFromDataSet(model,
       imageFrame,
       criterion = ClassNLLCriterion[Float](),
-      optimMethod = sgd,
+      optimMethod = optimMethod.asJava,
       endTrigger = Trigger.maxEpoch(2),
       batchSize = 8)
     optimizer.optimize()

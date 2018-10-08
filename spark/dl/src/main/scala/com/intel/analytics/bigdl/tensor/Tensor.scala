@@ -351,6 +351,15 @@ trait Tensor[T] extends Serializable with TensorMath[T] with Activity {
   }
 
   /**
+   * Get a new tensor with same storage.
+   *
+   * @return new tensor
+   */
+  def shallowClone(): Tensor[T] = {
+    this
+  }
+
+  /**
    * return a new empty tensor of the same type
    *
    * @return new tensor
@@ -795,6 +804,8 @@ trait Tensor[T] extends Serializable with TensorMath[T] with Activity {
     }
     return false
   }
+
+  private[bigdl] def toQuantizedTensor: QuantizedTensor[T]
 }
 
 /**
@@ -825,6 +836,8 @@ object DenseType extends TensorType
 object SparseType extends TensorType
 
 object QuantizedType extends TensorType
+
+object MklDnnType extends TensorType
 
 object Tensor {
 
@@ -949,7 +962,8 @@ object Tensor {
    */
   def apply[@specialized(Float, Double) T: ClassTag](storage: Storage[T])(
     implicit ev: TensorNumeric[T]): Tensor[T] = {
-    new DenseTensor(storage.asInstanceOf[Storage[T]])
+    require(storage.isInstanceOf[ArrayStorage[_]], "Only support array storage in this operaiton")
+    new DenseTensor(storage.asInstanceOf[ArrayStorage[T]])
   }
 
   /**
@@ -991,12 +1005,12 @@ object Tensor {
    * @tparam T
    * @return
    */
-  def apply[@specialized(Float, Double) T: ClassTag](storage: Storage[T],
-                                                     storageOffset: Int,
-                                                     size: Array[Int] = null,
-                                                     stride: Array[Int] = null)
-                                                    (implicit ev: TensorNumeric[T]): Tensor[T] = {
-    new DenseTensor(storage.asInstanceOf[Storage[T]], storageOffset, size, stride)
+  def apply[@specialized(Float, Double) T: ClassTag](
+    storage: Storage[T],
+    storageOffset: Int,
+    size: Array[Int] = null,
+    stride: Array[Int] = null)(implicit ev: TensorNumeric[T]): Tensor[T] = {
+    new DenseTensor(storage.asInstanceOf[ArrayStorage[T]], storageOffset, size, stride)
   }
 
   /**
