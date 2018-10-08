@@ -341,7 +341,7 @@ object DataSet {
     new CachedDistriDataSet[T](
       sc.parallelize(localData, nodeNumber)
         // Keep this line, or the array will be send to worker every time
-        .coalesce(nodeNumber, true)
+//        .coalesce(nodeNumber, true)
         .mapPartitions(iter => {
           Iterator.single(iter.toArray)
         }).setName("cached dataset")
@@ -358,7 +358,8 @@ object DataSet {
   def rdd[T: ClassTag](data: RDD[T]): DistributedDataSet[T] = {
     val nodeNumber = Engine.nodeNumber()
     new CachedDistriDataSet[T](
-      data.coalesce(nodeNumber, true)
+      data
+//        .coalesce(nodeNumber, true)
         .mapPartitions(iter => {
           Iterator.single(iter.toArray)
         }).setName("cached dataset")
@@ -385,7 +386,8 @@ object DataSet {
                                           groupSize: Int = 1): DistributedDataSet[T] = {
     val nodeNumber = Engine.nodeNumber()
     new CachedDistriDataSet[T](
-      data.coalesce(nodeNumber, true)
+      data
+//        .coalesce(nodeNumber, true)
         .mapPartitions(iter => {
           Iterator.single(sortData(iter.toArray, isInOrder))
         }).setName("cached dataset")
