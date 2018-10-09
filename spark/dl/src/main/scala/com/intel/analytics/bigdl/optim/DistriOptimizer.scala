@@ -618,9 +618,9 @@ object DistriOptimizer {
       case _ => throw new IllegalArgumentException
     }
 
-    require(dataset.originRDD().partitions.length == nodeNumber,
-      s"Passed in rdd partition number ${dataset.originRDD().partitions.length}" +
-        s" is not equal to configured node number ${nodeNumber}")
+//    require(dataset.originRDD().partitions.length == nodeNumber,
+//      s"Passed in rdd partition number ${dataset.originRDD().partitions.length}" +
+//        s" is not equal to configured node number ${nodeNumber}")
 
 
     val computeThresholdbatchSize = state.get[Int]("computeThresholdbatchSize").get
